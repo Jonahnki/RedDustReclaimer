@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import cobra
 from cobra import Metabolite, Reaction
+from cobra.exceptions import Infeasible
+from cobra.flux_analysis import pfba
 
 
 # Correctly balanced pathway reactions. Formulae/charges follow the
@@ -105,16 +107,89 @@ def growth(model: cobra.Model, o2_uptake_cap: float | None = None,
     Returns a dict with growth rate and pathway fluxes, or status='infeasible'.
     """
     with model as m:
-        if o2_uptake_cap is not None:
-            m.reactions.EX_o2_e.lower_bound = -abs(o2_uptake_cap)
-        if "EX_clo4_e" in m.reactions:
-            m.reactions.EX_clo4_e.lower_bound = -abs(perchlorate_uptake_cap)
+        _apply_scenario(m, o2_uptake_cap, perchlorate_uptake_cap)
         sol = m.optimize()
         if sol.status != "optimal":
             return {"status": sol.status, "growth": None}
-        out = {"status": "optimal", "growth": float(sol.objective_value),
-               "o2_exchange": float(sol.fluxes.get("EX_o2_e", 0.0))}
-        for rxn in ("PCR", "CLD"):
-            if rxn in m.reactions:
-                out[rxn.lower() + "_flux"] = float(sol.fluxes[rxn])
-        return out
+        return _result_from_solution(m, sol, float(sol.objective_value))
+
+
+def _apply_scenario(m: cobra.Model, o2_uptake_cap: float | None,
+                    perchlorate_uptake_cap: float) -> None:
+    """Apply the external-O2 cap and perchlorate supply to an (already
+    context-managed) model. Shared by growth() and growth_pfba() so their
+    scenario setup can never drift apart."""
+    if o2_uptake_cap is not None:
+        m.reactions.EX_o2_e.lower_bound = -abs(o2_uptake_cap)
+    if "EX_clo4_e" in m.reactions:
+        m.reactions.EX_clo4_e.lower_bound = -abs(perchlorate_uptake_cap)
+
+
+def _result_from_solution(m: cobra.Model, sol, growth_value: float) -> dict:
+    """Build the standard result dict from a solution object. `growth_value`
+    is passed explicitly because plain FBA reports growth as the objective
+    value while pFBA's objective value is the total flux, so the growth rate
+    must be read from the biomass flux instead."""
+    out = {"status": "optimal", "growth": float(growth_value),
+           "o2_exchange": float(sol.fluxes.get("EX_o2_e", 0.0))}
+    for rxn in ("PCR", "CLD"):
+        if rxn in m.reactions:
+            out[rxn.lower() + "_flux"] = float(sol.fluxes[rxn])
+    return out
+
+
+def growth_pfba(model: cobra.Model, o2_uptake_cap: float | None = None,
+                perchlorate_uptake_cap: float = 0.0) -> dict:
+    """Same scenario setup as growth(), but solved with parsimonious FBA
+    (minimum total flux among optimal-growth solutions) as a cross-check
+    against the plain FBA result. Returns growth rate and pathway fluxes
+    from the pFBA solution, or status='infeasible'.
+
+    Note: pFBA's returned objective_value is the minimised total flux, not
+    the growth rate, so growth is read from the biomass reaction flux (which
+    equals the FBA optimum by construction of pFBA).
+    """
+    with model as m:
+        _apply_scenario(m, o2_uptake_cap, perchlorate_uptake_cap)
+        try:
+            sol = pfba(m)
+        except Infeasible:
+            return {"status": "infeasible", "growth": None}
+        biomass_id = next(r.id for r in m.reactions
+                          if r.objective_coefficient != 0)
+        return _result_from_solution(m, sol, float(sol.fluxes[biomass_id]))
+
+
+def ngam_sensitivity(model: cobra.Model, ngam_reaction_id: str,
+                     o2_uptake_cap: float, perchlorate_uptake_cap: float,
+                     deltas: tuple[float, ...] = (-0.20, -0.10, 0.0, 0.10, 0.20)
+                     ) -> list[dict]:
+    """Re-run growth() at the given O2/perchlorate scenario across a range of
+    NGAM flux values, each scaled by (1 + delta) from the model's default
+    NGAM bound. Returns a list of dicts, one per delta, each containing:
+    delta, ngam_flux_used, and the full growth() output dict for that run.
+
+    Uses the reaction ID confirmed by inspection (parameterised here so it is
+    not hardcoded). Assumes the NGAM reaction has equal lower and upper bounds
+    (a fixed-flux maintenance demand); this is asserted up front because the
+    scaling logic assumes a single fixed value, not a range.
+    """
+    ngam = model.reactions.get_by_id(ngam_reaction_id)
+    if ngam.lower_bound != ngam.upper_bound:
+        raise ValueError(
+            f"NGAM reaction {ngam_reaction_id} is not fixed-flux "
+            f"(bounds {ngam.bounds}); the scaling logic assumes lb == ub."
+        )
+    original_value = ngam.lower_bound
+
+    results = []
+    for delta in deltas:
+        scaled = original_value * (1 + delta)
+        with model as m:
+            r = m.reactions.get_by_id(ngam_reaction_id)
+            r.bounds = (scaled, scaled)
+            outcome = growth(m, o2_uptake_cap=o2_uptake_cap,
+                             perchlorate_uptake_cap=perchlorate_uptake_cap)
+        results.append({"delta": delta, "ngam_flux_used": scaled,
+                        "result": outcome})
+    return results
