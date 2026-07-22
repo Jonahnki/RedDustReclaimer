@@ -1,0 +1,7 @@
+sequence,length_bp,gc_percent,score_baseline,score_optimized,change_percent
+Deinococcus_radiodurans_RecA_DNA_repair_enzyme,300,65.33,0.442,0.459,4.1
+Psychrobacter_arcticus_cold_shock_protein,180,83.89,0.47,0.482,2.5
+Methanocaldococcus_jannaschii_carbonic_anhydrase,297,65.32,0.444,0.462,4.1
+Caldalkalibacillus_thermarum_alkaline_protease,180,86.67,0.47,0.475,1.1
+Halobacterium_salinarum_bacteriorhodopsin,183,85.79,0.47,0.476,1.4
+Thermus_thermophilus_DNA_polymerase,180,85.56,0.47,0.478,1.8

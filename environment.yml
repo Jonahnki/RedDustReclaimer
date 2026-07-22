@@ -1,0 +1,11 @@
+name: reddust
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.9
+  - numpy>=1.21
+  - pip
+  - pip:
+      - cobra>=0.26
+      - pytest>=6.2
